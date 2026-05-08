@@ -2,7 +2,10 @@
 #define AmrQGD_H_
 
 #include <AMReX_AmrLevel.H>
+#include <AMReX_FluxRegister.H>
 #include <AMReX_ParmParse.H>
+
+#include <memory>
 
 enum StateType { State_Type = 0, NUM_STATE_TYPE};
 
@@ -89,6 +92,9 @@ public:
 
     // Need to be public for CUDA
     void computeRHS (amrex::MultiFab& dSdt, amrex::MultiFab const& S);
+
+    //! Flux register for the coarse/fine interface between this level and Level()-1.
+    std::unique_ptr<amrex::FluxRegister> flux_reg;
 
 
 private:

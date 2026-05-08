@@ -29,7 +29,11 @@ AmrQGD::AmrQGD (Amr& amr, int lev, const Geometry& gm,
                             const BoxArray& ba, const DistributionMapping& dm,
                             Real time)
     : AmrLevel(amr,lev,gm,ba,dm,time)
-{}
+{
+    if (lev > 0) {
+        flux_reg = std::make_unique<FluxRegister>(ba, dm, amr.refRatio(lev-1), lev, 4);
+    }
+}
 
 AmrQGD::~AmrQGD () {}
 
@@ -168,6 +172,36 @@ AmrQGD::post_timestep (int iteration)
             // Need to fill one ghost cell for the high-order interpolation below
             // maybe 2 chande to 1 aor ghost cells
             FillPatch(fine_level, S_fine, 2, t, State_Type, 0, ncomp);
+        }
+
+        if (fine_level.flux_reg) {
+            // Reflux conservative variables (rho, rho*u, rho*v, E) and
+            // convert the primitive state storage back afterwards.
+            MultiFab E(S_crse.boxArray(), S_crse.DistributionMap(), 1, 0);
+            auto const& s = S_crse.arrays();
+            auto const& e = E.arrays();
+            amrex::ParallelFor(E, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
+            {
+                e[bi](i,j,k) = s[bi](i,j,k,3)/(gamma - 1.)
+                    + 0.5*s[bi](i,j,k,0)*(s[bi](i,j,k,1)*s[bi](i,j,k,1)
+                                         + s[bi](i,j,k,2)*s[bi](i,j,k,2));
+            });
+            MultiFab::Multiply(S_crse, S_crse, 0, 1, 1, 0);
+            MultiFab::Multiply(S_crse, S_crse, 0, 2, 1, 0);
+            MultiFab::Copy(S_crse, E, 0, 3, 1, 0);
+
+            fine_level.flux_reg->Reflux(S_crse, 1.0, 0, 0, 4, Geom());
+
+            auto const& sc = S_crse.arrays();
+            amrex::ParallelFor(S_crse, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
+            {
+                sc[bi](i,j,k,1) /= sc[bi](i,j,k,0);
+                sc[bi](i,j,k,2) /= sc[bi](i,j,k,0);
+                sc[bi](i,j,k,3) = (gamma - 1.)
+                    * (sc[bi](i,j,k,3) - 0.5*sc[bi](i,j,k,0)
+                       * (sc[bi](i,j,k,1)*sc[bi](i,j,k,1)
+                        + sc[bi](i,j,k,2)*sc[bi](i,j,k,2)));
+            });
         }
 
         FourthOrderInterpFromFineToCoarse(S_crse, 0, ncomp, S_fine, ratio);
