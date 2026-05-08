@@ -148,6 +148,16 @@ private:
     //! Function to read parameters from input file.
     static void read_params ();
 
+    //! Compute max(|u| + c) over valid cells on this level.
+    amrex::Real computeMaxWaveSpeed ();
+
+    //! Compute the minimum positive QGD relaxation time tau over valid cells on this level.
+    amrex::Real computeMinTau ();
+
+    //! Compute this level's CFL/QGD-limited time step from state reductions.
+    amrex::Real computeStableDt (amrex::Real& max_u_plus_c,
+                                 amrex::Real& min_tau);
+
     //! Get AmrQGD
     AmrQGD& getLevel (int lev) {
         return static_cast<AmrQGD&>(parent->getLevel(lev));
