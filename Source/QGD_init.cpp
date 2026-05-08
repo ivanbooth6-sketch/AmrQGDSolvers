@@ -13,14 +13,17 @@ void AmrQGD::initData ()
     amrex::ParallelFor(S_new,
     [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) noexcept
     {
-        //Set Sc number
-        snew[bi](i,j,k,0) = rhou;      //rho
-        snew[bi](i,j,k,1) = Uu;        //Ux
-        snew[bi](i,j,k,2) = Vu;        //Uy
-        snew[bi](i,j,k,3) = pu;        //P
-        snew[bi](i,j,k,4) = ScQgd;     //Sc
-        snew[bi](i,j,k,5) = curl;      //vorticity
-        snew[bi](i,j,k,6) = magGradRho;
+        const Real rho = rhou;
+        const Real ux = Uu;
+        const Real uy = Vu;
+        const Real p = pu;
+        snew[bi](i,j,k,URHO) = rho;
+        snew[bi](i,j,k,UMX) = rho*ux;
+        snew[bi](i,j,k,UMY) = rho*uy;
+        snew[bi](i,j,k,UENG) = p/(gamma - 1.) + 0.5*rho*(ux*ux + uy*uy);
+        snew[bi](i,j,k,USC) = ScQgd;
+        snew[bi](i,j,k,UCURL) = curl;
+        snew[bi](i,j,k,UMAGGRADRHO) = magGradRho;
     });
     FillPatcherFill(S_new, 0, ncomp, nghost, 0, State_Type, 0); 
 }
