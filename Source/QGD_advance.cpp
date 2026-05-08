@@ -2,6 +2,7 @@
 
 #include <AMReX_Array.H>
 #include <AMReX_MultiFabUtil.H>
+#include <AMReX_Reduce.H>
 
 #include <iostream>
 
@@ -21,7 +22,6 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
     auto dx = Geom().CellSizeArray();
 
     MultiFab& S_new = state[0].newData();
-    auto const& VectNew = S_new.arrays();
     MultiFab& S_old = state[0].oldData();
     FillPatcherFill(S_old, 0, ncomp, nghost, time, State_Type, 0);
 
@@ -205,6 +205,7 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
 
     auto const& fx = fluxes[0].const_arrays();
     auto const& fy = fluxes[1].const_arrays();
+    auto const& StateUpdate = S_new.arrays();
     amrex::ParallelFor(S_new, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
         const double rho = ConsOld[bi](i,j,k,URHO)
@@ -219,37 +220,71 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
             - dt*(fx[bi](i+1,j,k,UMY) - fx[bi](i,j,k,UMY))/dx[0]
             - dt*(fy[bi](i,j+1,k,UMY) - fy[bi](i,j,k,UMY))/dx[1];
 
-        double EN = ConsOld[bi](i,j,k,UENG)
+        const double EN = ConsOld[bi](i,j,k,UENG)
             - dt*(fx[bi](i+1,j,k,UENG) - fx[bi](i,j,k,UENG))/dx[0]
             - dt*(fy[bi](i,j+1,k,UENG) - fy[bi](i,j,k,UENG))/dx[1];
 
-        const double ux = momx / rho;
-        const double uy = momy / rho;
-        double p = (gamma - 1.)*(EN - 0.5*rho*(ux*ux + uy*uy));
-
-        // limiter acts on primitive pressure but stores conservative energy
-        if (p <= 0 && pressureLimiter)
-        {
-             amrex::Print() << "Warning! Pressure less then 0." << "\n";
-             p = 0.01;
-             EN = p/(gamma - 1.) + 0.5*rho*(ux*ux + uy*uy);
-        }
-
-        VectNew[bi](i,j,k,URHO) = rho;
-        VectNew[bi](i,j,k,UMX) = momx;
-        VectNew[bi](i,j,k,UMY) = momy;
-        VectNew[bi](i,j,k,UENG) = EN;
-        VectNew[bi](i,j,k,USC) = ConsOld[bi](i,j,k,USC);
+        StateUpdate[bi](i,j,k,URHO) = rho;
+        StateUpdate[bi](i,j,k,UMX) = momx;
+        StateUpdate[bi](i,j,k,UMY) = momy;
+        StateUpdate[bi](i,j,k,UENG) = EN;
+        StateUpdate[bi](i,j,k,USC) = ConsOld[bi](i,j,k,USC);
 
         // solve vorticity (curl) from the primitive velocities
-        VectNew[bi](i,j,k,UCURL) = 0.5*(PrimOld[bi](i+1,j,k,QUY) - PrimOld[bi](i-1,j,k,QUY)) / dx[0]
-                                 - 0.5*(PrimOld[bi](i,j+1,k,QUX) - PrimOld[bi](i,j-1,k,QUX)) / dx[1];
+        StateUpdate[bi](i,j,k,UCURL) = 0.5*(PrimOld[bi](i+1,j,k,QUY) - PrimOld[bi](i-1,j,k,QUY)) / dx[0]
+                                     - 0.5*(PrimOld[bi](i,j+1,k,QUX) - PrimOld[bi](i,j-1,k,QUX)) / dx[1];
 
         // solve magGradRho
         double GradRhoX = 0.5*(PrimOld[bi](i,j+1,k,QRHO) - PrimOld[bi](i,j-1,k,QRHO)) / dx[0];
         double GradRhoY = 0.5*(PrimOld[bi](i+1,j,k,QRHO) - PrimOld[bi](i-1,j,k,QRHO)) / dx[1];
-        VectNew[bi](i,j,k,UMAGGRADRHO) = sqrt(pow(GradRhoX,2) + pow(GradRhoY,2));
+        StateUpdate[bi](i,j,k,UMAGGRADRHO) = sqrt(pow(GradRhoX,2) + pow(GradRhoY,2));
     });
+
+    if (pressureLimiter) {
+        FillPatcherFill(S_new, 0, ncomp, nghost, time + dt, State_Type, 0);
+
+        MultiFab stable_state(S_new.boxArray(), S_new.DistributionMap(), ncomp, nghost);
+        MultiFab::Copy(stable_state, S_new, 0, 0, ncomp, nghost);
+
+        auto const& StableState = stable_state.const_arrays();
+        constexpr Real pressure_floor = 0.01;
+
+        ReduceOps<ReduceOpSum> reduce_op;
+        ReduceData<Long> reduce_data(reduce_op);
+        using ReduceTuple = typename decltype(reduce_data)::Type;
+        reduce_op.eval(stable_state, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+        {
+            const Real rho = StableState[bi](i,j,k,URHO);
+            const Real ux = StableState[bi](i,j,k,UMX) / rho;
+            const Real uy = StableState[bi](i,j,k,UMY) / rho;
+            const Real kinetic = 0.5*rho*(ux*ux + uy*uy);
+            const Real p = (gamma - 1.)*(StableState[bi](i,j,k,UENG) - kinetic);
+            return {p <= 0.0 ? Long(1) : Long(0)};
+        });
+        const Long negative_pressure_count = amrex::get<0>(reduce_data.value());
+
+        if (negative_pressure_count > 0) {
+            amrex::Print() << "Warning! Pressure limiter applied to "
+                           << negative_pressure_count << " cells." << "\n";
+
+            auto const& LimitedState = S_new.arrays();
+            amrex::ParallelFor(S_new, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
+            {
+                const Real rho = StableState[bi](i,j,k,URHO);
+                const Real momx = StableState[bi](i,j,k,UMX);
+                const Real momy = StableState[bi](i,j,k,UMY);
+                const Real ux = momx / rho;
+                const Real uy = momy / rho;
+                const Real kinetic = 0.5*rho*(ux*ux + uy*uy);
+                const Real p = (gamma - 1.)*(StableState[bi](i,j,k,UENG) - kinetic);
+
+                if (p <= 0.0) {
+                    LimitedState[bi](i,j,k,UENG) = pressure_floor/(gamma - 1.) + kinetic;
+                }
+            });
+            Gpu::streamSynchronize();
+        }
+    }
 
     if (Level() < parent->finestLevel()) {
         auto& fine_level = getLevel(Level()+1);
