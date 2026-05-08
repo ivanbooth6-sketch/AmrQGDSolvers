@@ -1,6 +1,11 @@
 #include "AmrQGD.H"
 
 #include <AMReX_ParmParse.H>
+#include <AMReX_Reduce.H>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <numeric>
 
 using namespace amrex;
@@ -115,26 +120,137 @@ AmrQGD::init ()
     }
 }
 
+Real
+AmrQGD::computeMaxWaveSpeed ()
+{
+    MultiFab const& S_new = get_new_data(State_Type);
+    auto const& state_data = S_new.const_arrays();
+
+    ReduceOps<ReduceOpMax> reduce_op;
+    ReduceData<Real> reduce_data(reduce_op);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+
+    reduce_op.eval(S_new, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+    {
+        const Real rho = state_data[bi](i,j,k,URHO);
+        if (rho <= 0.0) {
+            return {0.0};
+        }
+
+        const Real ux = state_data[bi](i,j,k,UMX) / rho;
+        const Real uy = state_data[bi](i,j,k,UMY) / rho;
+        const Real kinetic = 0.5*rho*(ux*ux + uy*uy);
+        const Real p = (gamma - 1.0)*(state_data[bi](i,j,k,UENG) - kinetic);
+        if (p <= 0.0) {
+            return {0.0};
+        }
+
+        const Real sound_speed = sqrt(gamma*p / rho);
+        const Real velocity_mag = sqrt(ux*ux + uy*uy);
+        return {velocity_mag + sound_speed};
+    });
+
+    return amrex::get<0>(reduce_data.value());
+}
+
+Real
+AmrQGD::computeMinTau ()
+{
+    MultiFab const& S_new = get_new_data(State_Type);
+    auto const& state_data = S_new.const_arrays();
+    const auto dx = Geom().CellSizeArray();
+    const Real hh = sqrt(AMREX_D_TERM(dx[0]*dx[0], + dx[1]*dx[1], + dx[2]*dx[2]));
+    const Real invalid_tau = std::numeric_limits<Real>::max();
+
+    ReduceOps<ReduceOpMin> reduce_op;
+    ReduceData<Real> reduce_data(reduce_op);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+
+    reduce_op.eval(S_new, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+    {
+        const Real rho = state_data[bi](i,j,k,URHO);
+        if (rho <= 0.0) {
+            return {invalid_tau};
+        }
+
+        const Real ux = state_data[bi](i,j,k,UMX) / rho;
+        const Real uy = state_data[bi](i,j,k,UMY) / rho;
+        const Real kinetic = 0.5*rho*(ux*ux + uy*uy);
+        const Real p = (gamma - 1.0)*(state_data[bi](i,j,k,UENG) - kinetic);
+        if (p <= 0.0) {
+            return {invalid_tau};
+        }
+
+        const Real sound_speed = sqrt(gamma*p / rho);
+        if (sound_speed <= 0.0) {
+            return {invalid_tau};
+        }
+
+        const Real tau = alphaQgd*hh/sound_speed + mutGas/p;
+        return {tau > 0.0 ? tau : invalid_tau};
+    });
+
+    return amrex::get<0>(reduce_data.value());
+}
+
+Real
+AmrQGD::computeStableDt (Real& max_u_plus_c, Real& min_tau)
+{
+    max_u_plus_c = computeMaxWaveSpeed();
+    min_tau = computeMinTau();
+
+    const auto dx = Geom().CellSizeArray();
+    const Real dx_min = std::min({AMREX_D_DECL(dx[0], dx[1], dx[2])});
+
+    if (min_tau <= 0.0 || min_tau == std::numeric_limits<Real>::max()) {
+        amrex::Print() << "Warning! Non-positive or unavailable min_tau on level "
+                       << Level() << "; falling back to advective CFL dt." << "\n";
+        if (max_u_plus_c <= 0.0) {
+            return std::numeric_limits<Real>::max();
+        }
+        return cfl * dx_min / max_u_plus_c;
+    }
+
+    const Real denominator = max_u_plus_c + dx_min/min_tau;
+    if (denominator <= 0.0) {
+        return std::numeric_limits<Real>::max();
+    }
+
+    return cfl * dx_min / denominator;
+}
+
 void
-AmrQGD::computeInitialDt (int finest_level, int /*sub_cycle*/,
+AmrQGD::computeInitialDt (int finest_level, int sub_cycle,
                                 Vector<int>& n_cycle,
-                                const Vector<IntVect>& /*ref_ratio*/,
+                                const Vector<IntVect>& ref_ratio,
                                 Vector<Real>& dt_level, Real stop_time)
 {
     if (Level() > 0) { return; } // Level 0 does this for every level.
 
-    Vector<int> nsteps(n_cycle.size()); // Total number of steps in one level 0 step
-    std::partial_sum(n_cycle.begin(), n_cycle.end(), nsteps.begin(),
-                     std::multiplies<int>());
-
-    Real dt_0 = deltaT0;//std::numeric_limits<Real>::max();
-    for (int ilev = 0; ilev <= finest_level; ++ilev)
-    {
-         const auto dx = parent->Geom(ilev).CellSizeArray();
-         Real dtlev = cfl * std::min({AMREX_D_DECL(dx[0],dx[1],dx[2])});
-         dt_0 = std::min(dt_0, nsteps[ilev] * dtlev);
+    Vector<int> nsteps(finest_level + 1, 1); // Total number of steps in one level 0 step.
+    for (int ilev = 1; ilev <= finest_level; ++ilev) {
+        int cycle_ratio = 1;
+        if (sub_cycle) {
+            cycle_ratio = (ilev < static_cast<int>(n_cycle.size())) ? n_cycle[ilev] : 0;
+            if (cycle_ratio <= 0 && (ilev-1) < static_cast<int>(ref_ratio.size())) {
+                cycle_ratio = ref_ratio[ilev-1][0];
+            }
+        }
+        cycle_ratio = std::max(1, cycle_ratio);
+        nsteps[ilev] = nsteps[ilev-1] * cycle_ratio;
     }
-    // // dt_0 will be the time step on level 0 (unless limited by stop_time).
+
+    Real dt_0 = deltaT0 > 0.0 ? deltaT0 : std::numeric_limits<Real>::max();
+    Vector<Real> stable_dt(finest_level + 1, std::numeric_limits<Real>::max());
+    Vector<Real> max_u_plus_c(finest_level + 1, 0.0);
+    Vector<Real> min_tau(finest_level + 1, std::numeric_limits<Real>::max());
+
+    for (int ilev = 0; ilev <= finest_level; ++ilev) {
+         AmrQGD& level_data = getLevel(ilev);
+         stable_dt[ilev] = level_data.computeStableDt(max_u_plus_c[ilev], min_tau[ilev]);
+         dt_0 = std::min(dt_0, nsteps[ilev] * stable_dt[ilev]);
+    }
+    // dt_0 will be the time step on level 0 (unless limited by stop_time).
 
     if (stop_time > 0)
     {
@@ -147,7 +263,14 @@ AmrQGD::computeInitialDt (int finest_level, int /*sub_cycle*/,
     }
 
     for (int ilev = 0; ilev <= finest_level; ++ilev) {
-        dt_level[ilev] = dt_0/std::pow(2, ilev);// / Real(nsteps[ilev]);
+        dt_level[ilev] = dt_0 / nsteps[ilev];
+        amrex::Print() << "dt diagnostics level " << ilev
+                       << ": max_u_plus_c=" << max_u_plus_c[ilev]
+                       << ", min_tau=" << min_tau[ilev]
+                       << ", stable_dt=" << stable_dt[ilev]
+                       << ", n_cycle_product=" << nsteps[ilev]
+                       << ", dt_level=" << dt_level[ilev]
+                       << "\n";
     }
 }
 
@@ -158,12 +281,14 @@ AmrQGD::computeNewDt (int finest_level, int sub_cycle,
                             Vector<Real>& dt_min, Vector<Real>& dt_level,
                             Real stop_time, int post_regrid_flag)
 {
-    // For this code we can just call computeInitialDt.
-    computeInitialDt(finest_level, sub_cycle, n_cycle, ref_ratio, dt_level, stop_time);
-    //
     // We are at the end of a coarse grid timecycle.
-    // Compute the timesteps for the next iteration.
-    //
+    // Compute the timesteps for the next iteration using the same
+    // level reductions and AMR subcycling constraints as the initial dt.
+    computeInitialDt(finest_level, sub_cycle, n_cycle, ref_ratio, dt_level, stop_time);
+
+    for (int ilev = 0; ilev <= finest_level; ++ilev) {
+        dt_min[ilev] = dt_level[ilev];
+    }
 }
 
 void
