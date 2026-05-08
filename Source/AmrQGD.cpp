@@ -314,8 +314,8 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
         }
         else if (refcond == 4) //vorticity
         {
-            amrex::Real gradRhoX  = 0.5*(rho_at(i,j+1) - rho_at(i,j-1)) / dx[0];
-            amrex::Real gradRhoY  = 0.5*(rho_at(i+1,j) - rho_at(i-1,j)) / dx[1];
+            amrex::Real gradRhoX  = 0.5*(rho_at(i+1,j) - rho_at(i-1,j)) / dx[0];
+            amrex::Real gradRhoY  = 0.5*(rho_at(i,j+1) - rho_at(i,j-1)) / dx[1];
             amrex::Real gradRho   = sqrt(pow(gradRhoX,2) + pow(gradRhoY,2));
             amrex::Real vorticity = std::abs(0.5*(uy_at(i+1,j) - uy_at(i-1,j)) / dx[0] + 0.5*(ux_at(i,j+1) - ux_at(i,j-1)) / dx[1]);
 
