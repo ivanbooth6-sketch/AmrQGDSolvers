@@ -336,21 +336,32 @@ AmrQGD::post_timestep (int iteration)
 /**
  * Do work after init().
  */
-//void
-//AmrQGD::post_init (Real /*stop_time*/)
-//{
-//    if (level > 0) {
-//        return;
-//    }
-    //
-    // Average data down from finer levels
-    // so that conserved data is consistent between levels.
-    //
-//    int finest_level = parent->finestLevel();
-//    for (int k = finest_level-1; k>= 0; k--) {
-//        getLevel(k).resetFillPatcher();
-//    }
-//}
+void
+AmrQGD::post_init (Real /*stop_time*/)
+{
+    if (level > 0) {
+        return;
+    }
+
+    // Restrict initialized state data from fine levels onto the cells they
+    // cover on coarser levels.  There is no flux-register correction at
+    // initialization time; refluxing is only applied after an advance in
+    // post_timestep, before the same fine-to-coarse state restriction.
+    const int finest_level = parent->finestLevel();
+    for (int k = finest_level - 1; k >= 0; --k) {
+        auto& crse_level = getLevel(k);
+        auto& fine_level = getLevel(k+1);
+        MultiFab& S_crse = crse_level.get_new_data(State_Type);
+        MultiFab& S_fine = fine_level.get_new_data(State_Type);
+        const IntVect ratio = parent->refRatio(k);
+
+        FourthOrderInterpFromFineToCoarse(S_crse, 0, ncomp, S_fine, ratio);
+
+        // This coarse level has changed, so any FillPatcher that uses it as
+        // coarse data for the adjacent fine level must be rebuilt.
+        fine_level.resetFillPatcher();
+    }
+}
 
 void
 AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
