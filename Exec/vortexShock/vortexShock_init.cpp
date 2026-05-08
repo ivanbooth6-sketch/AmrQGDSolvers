@@ -58,18 +58,17 @@ void AmrQGD::initData ()
         double rr = dx*dx + dy*dy;
         double r = sqrt(rr);
 
-        //Set Sc number
-        snew[bi](i,j,k,4) = ScQgd;    //Sc
+        Real rho = rhod;
+        Real ux = Ud;
+        Real uy = Vd;
+        Real p = pd;
 
         if (x <= 0.5)
         {
-//            double rr = (x-o_x)*(x-o_x) + (y-o_y)*(y-o_y);
-//            double r = sqrt(rr);
-
-            snew[bi](i,j,k,0) = rhou; //rho
-            snew[bi](i,j,k,1) = Uu;   //Ux
-            snew[bi](i,j,k,2) = Vu;   //Uy
-            snew[bi](i,j,k,3) = pu;   //P
+            rho = rhou;
+            ux = Uu;
+            uy = Vu;
+            p = pu;
 
             if (r <= b)
             {
@@ -78,8 +77,8 @@ void AmrQGD::initData ()
                 if (r <= a)
                 {
                     double magU = Um*r/a;
-                    snew[bi](i,j,k,1) = snew[bi](i,j,k,1) - magU*sinTheta;      //Ux
-                    snew[bi](i,j,k,2) = snew[bi](i,j,k,2) + magU*cosTheta;      //Uy
+                    ux -= magU*sinTheta;
+                    uy += magU*cosTheta;
 
                     //temperature
                     double radialTerm = -2.0*b*b*log(b)-(0.5*a*a)+(2.0*b*b*log(a))+(0.5*b*b*b*b/(a*a));
@@ -87,29 +86,30 @@ void AmrQGD::initData ()
                     radialTerm = 0.5 * (1.0 - r*r/(a*a));
                     double T = T_-(gamma-1.0)*Um*Um*radialTerm/(RGas*gamma);
 
-                    snew[bi](i,j,k,3) = pu*pow(T/Tu,gamma/(gamma-1));
-                    snew[bi](i,j,k,0) = snew[bi](i,j,k,3)/(RGas*T);
+                    p = pu*pow(T/Tu,gamma/(gamma-1));
+                    rho = p/(RGas*T);
                 }
                 else
                 {
                     double magU = Um*a*(r-b*b/r)/(a*a-b*b);
-                    snew[bi](i,j,k,1) = snew[bi](i,j,k,1) - magU*sinTheta;      //Ux
-                    snew[bi](i,j,k,2) = snew[bi](i,j,k,2) + magU*cosTheta;      //Uy
+                    ux -= magU*sinTheta;
+                    uy += magU*cosTheta;
                     //temperature
                     double radialTerm = -2.0*b*b*log(b) - (0.5*r*r)+(2.0*b*b*log(r))+(0.5*b*b*b*b/(r*r));
                     double T = Tu-(gamma-1.0)*pow(Um*a/(a*a-b*b),2)*radialTerm/(RGas*gamma);
-                    snew[bi](i,j,k,3) = pu*pow(T/Tu,gamma/(gamma-1));
-                    snew[bi](i,j,k,0) = snew[bi](i,j,k,3)/(RGas*T);
+                    p = pu*pow(T/Tu,gamma/(gamma-1));
+                    rho = p/(RGas*T);
                 }
             }
         }
-        else
-        {
-            snew[bi](i,j,k,0) = rhod;
-            snew[bi](i,j,k,1) = Ud;
-            snew[bi](i,j,k,2) = Vd;
-            snew[bi](i,j,k,3) = pd; 
-        }
+
+        snew[bi](i,j,k,URHO) = rho;
+        snew[bi](i,j,k,UMX) = rho*ux;
+        snew[bi](i,j,k,UMY) = rho*uy;
+        snew[bi](i,j,k,UENG) = p/(gamma - 1.) + 0.5*rho*(ux*ux + uy*uy);
+        snew[bi](i,j,k,USC) = ScQgd;
+        snew[bi](i,j,k,UCURL) = 0.0;
+        snew[bi](i,j,k,UMAGGRADRHO) = 0.0;
     });
     FillPatcherFill(S_new, 0, ncomp, nghost, 0, State_Type, 0); 
     amrex::Print() << "Amr QGD solver will start with next params: " << "AlphaQQD = " << alphaQgd << " and ScQGD = " << ScQgd << "\n" 

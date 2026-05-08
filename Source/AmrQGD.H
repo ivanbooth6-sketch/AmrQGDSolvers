@@ -90,6 +90,29 @@ public:
                            amrex::Real time, int n_error_buf = 0,
                            int ngrow = 0) override;
 
+    // Conservative state component indices.
+    static constexpr int URHO = 0;  //!< density rho
+    static constexpr int UMX  = 1;  //!< x-momentum rho*ux
+    static constexpr int UMY  = 2;  //!< y-momentum rho*uy
+    static constexpr int UENG = 3;  //!< total energy density E
+
+    // Diagnostic/passive state components (not conservative reflux quantities).
+    static constexpr int USC = 4;         //!< QGD Schmidt number / passive diagnostic
+    static constexpr int UCURL = 5;       //!< vorticity diagnostic
+    static constexpr int UMAGGRADRHO = 6; //!< |grad rho| diagnostic
+
+    static constexpr int n_cons = 4;
+    static constexpr int n_diag = 3;
+
+    // Primitive variables computed from the conservative state for QGD fluxes.
+    static constexpr int QRHO = 0;
+    static constexpr int QUX  = 1;
+    static constexpr int QUY  = 2;
+    static constexpr int QP   = 3;
+    static constexpr int QT   = 4;
+    static constexpr int QCS  = 5;
+    static constexpr int n_prim = 6;
+
     // Need to be public for CUDA
     void computeRHS (amrex::MultiFab& dSdt, amrex::MultiFab const& S);
 
@@ -99,7 +122,7 @@ public:
 
 private:
 
-    static constexpr int ncomp  = 7; //2; // 4 variables: rho & u & v & p & Sc & curl & magGradRho
+    static constexpr int ncomp  = n_cons + n_diag;
     static constexpr int nghost = 2; //2; // Two ghost cells needed
 
     static int verbose;

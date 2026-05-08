@@ -5,6 +5,22 @@
 
 using namespace amrex;
 
+constexpr int AmrQGD::URHO;
+constexpr int AmrQGD::UMX;
+constexpr int AmrQGD::UMY;
+constexpr int AmrQGD::UENG;
+constexpr int AmrQGD::USC;
+constexpr int AmrQGD::UCURL;
+constexpr int AmrQGD::UMAGGRADRHO;
+constexpr int AmrQGD::n_cons;
+constexpr int AmrQGD::n_diag;
+constexpr int AmrQGD::QRHO;
+constexpr int AmrQGD::QUX;
+constexpr int AmrQGD::QUY;
+constexpr int AmrQGD::QP;
+constexpr int AmrQGD::QT;
+constexpr int AmrQGD::QCS;
+constexpr int AmrQGD::n_prim;
 constexpr int AmrQGD::ncomp;
 constexpr int AmrQGD::nghost;
 int  AmrQGD::verbose = 0;
@@ -31,7 +47,7 @@ AmrQGD::AmrQGD (Amr& amr, int lev, const Geometry& gm,
     : AmrLevel(amr,lev,gm,ba,dm,time)
 {
     if (lev > 0) {
-        flux_reg = std::make_unique<FluxRegister>(ba, dm, amr.refRatio(lev-1), lev, 4);
+        flux_reg = std::make_unique<FluxRegister>(ba, dm, amr.refRatio(lev-1), lev, n_cons);
     }
 }
 
@@ -59,8 +75,8 @@ AmrQGD::variableSetUp ()
     StateDescriptor::BndryFunc bndryfunc(bcfill);
     bndryfunc.setRunOnGPU(true);
 
-    desc_lst.setComponent(State_Type, 0, {"rho", "ux", "uy","p", "Sc", "curl", "magGradRho"}, bcs, bndryfunc);
-    
+    desc_lst.setComponent(State_Type, 0, {"rho", "rho_ux", "rho_uy", "E", "Sc", "curl", "magGradRho"}, bcs, bndryfunc);
+
 }
 
 void
@@ -112,7 +128,7 @@ AmrQGD::computeInitialDt (int finest_level, int /*sub_cycle*/,
                      std::multiplies<int>());
 
     Real dt_0 = deltaT0;//std::numeric_limits<Real>::max();
-    for (int ilev = 0; ilev <= finest_level; ++ilev) 
+    for (int ilev = 0; ilev <= finest_level; ++ilev)
     {
          const auto dx = parent->Geom(ilev).CellSizeArray();
          Real dtlev = cfl * std::min({AMREX_D_DECL(dx[0],dx[1],dx[2])});
@@ -120,7 +136,7 @@ AmrQGD::computeInitialDt (int finest_level, int /*sub_cycle*/,
     }
     // // dt_0 will be the time step on level 0 (unless limited by stop_time).
 
-    if (stop_time > 0) 
+    if (stop_time > 0)
     {
          // Limit dt's by the value of stop_time.
          const Real eps = 0.001 * dt_0;
@@ -167,7 +183,7 @@ AmrQGD::post_timestep (int iteration)
 
         IntVect ratio = parent->refRatio(Level());
         AMREX_ASSERT(ratio == 2 || ratio == 3);
-        if (ratio == 2) 
+        if (ratio == 2)
         {
             // Need to fill one ghost cell for the high-order interpolation below
             // maybe 2 chande to 1 aor ghost cells
@@ -175,33 +191,9 @@ AmrQGD::post_timestep (int iteration)
         }
 
         if (fine_level.flux_reg) {
-            // Reflux conservative variables (rho, rho*u, rho*v, E) and
-            // convert the primitive state storage back afterwards.
-            MultiFab E(S_crse.boxArray(), S_crse.DistributionMap(), 1, 0);
-            auto const& s = S_crse.arrays();
-            auto const& e = E.arrays();
-            amrex::ParallelFor(E, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
-            {
-                e[bi](i,j,k) = s[bi](i,j,k,3)/(gamma - 1.)
-                    + 0.5*s[bi](i,j,k,0)*(s[bi](i,j,k,1)*s[bi](i,j,k,1)
-                                         + s[bi](i,j,k,2)*s[bi](i,j,k,2));
-            });
-            MultiFab::Multiply(S_crse, S_crse, 0, 1, 1, 0);
-            MultiFab::Multiply(S_crse, S_crse, 0, 2, 1, 0);
-            MultiFab::Copy(S_crse, E, 0, 3, 1, 0);
-
-            fine_level.flux_reg->Reflux(S_crse, 1.0, 0, 0, 4, Geom());
-
-            auto const& sc = S_crse.arrays();
-            amrex::ParallelFor(S_crse, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
-            {
-                sc[bi](i,j,k,1) /= sc[bi](i,j,k,0);
-                sc[bi](i,j,k,2) /= sc[bi](i,j,k,0);
-                sc[bi](i,j,k,3) = (gamma - 1.)
-                    * (sc[bi](i,j,k,3) - 0.5*sc[bi](i,j,k,0)
-                       * (sc[bi](i,j,k,1)*sc[bi](i,j,k,1)
-                        + sc[bi](i,j,k,2)*sc[bi](i,j,k,2)));
-            });
+            // Reflux only the conservative components (rho, rho*ux, rho*uy, E).
+            // Diagnostic/passive components are not conservative reflux quantities.
+            fine_level.flux_reg->Reflux(S_crse, 1.0, 0, URHO, n_cons, Geom());
         }
 
         FourthOrderInterpFromFineToCoarse(S_crse, 0, ncomp, S_fine, ratio);
@@ -241,20 +233,30 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
 {
     const auto problo = Geom().ProbLoArray();
     const auto probhi = Geom().ProbHiArray();
-    const auto dx = Geom().CellSizeArray(); 
+    const auto dx = Geom().CellSizeArray();
     auto const& S_new = get_new_data(State_Type);
     //const char tagval = TagBox::SET;
     auto const& a = tags.arrays();
     auto const& s = S_new.const_arrays();
-    amrex::ParallelFor(tags, [&] AMREX_GPU_DEVICE (int bi, int i, int j, int k) 
+    amrex::ParallelFor(tags, [&] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
-        if (refcond == 0) //grad(Ux)
+        const auto rho_at = [=] AMREX_GPU_DEVICE (int ii, int jj) noexcept {
+            return s[bi](ii,jj,k,URHO);
+        };
+        const auto ux_at = [=] AMREX_GPU_DEVICE (int ii, int jj) noexcept {
+            return s[bi](ii,jj,k,UMX) / s[bi](ii,jj,k,URHO);
+        };
+        const auto uy_at = [=] AMREX_GPU_DEVICE (int ii, int jj) noexcept {
+            return s[bi](ii,jj,k,UMY) / s[bi](ii,jj,k,URHO);
+        };
+
+        if (refcond == 0) //grad(Uy)
         {
-            if (amrex::Math::abs(s[bi](i,j,k,2)-s[bi](i-1,j,k,2))/dx[0] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,2)-s[bi](i,j-1,k,2))/dx[1] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,2)-s[bi](i+1,j,k,2))/dx[0] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,2)-s[bi](i,j+1,k,2))/dx[1] > refdengrad) 
-//             if (sqrt(s[bi](i,j,k,2)*s[bi](i,j,k,2) + s[bi](i,j,k,1)*s[bi](i,j,k,1)) > 2.3) 
+            if (amrex::Math::abs(uy_at(i,j)-uy_at(i-1,j))/dx[0] > refdengrad or
+                amrex::Math::abs(uy_at(i,j)-uy_at(i,j-1))/dx[1] > refdengrad or
+                amrex::Math::abs(uy_at(i,j)-uy_at(i+1,j))/dx[0] > refdengrad or
+                amrex::Math::abs(uy_at(i,j)-uy_at(i,j+1))/dx[1] > refdengrad)
+//             if (sqrt(uy_at(i,j)*uy_at(i,j) + ux_at(i,j)*ux_at(i,j)) > 2.3)
             {
                 a[bi](i,j,k) = tagval;
             } else {
@@ -263,10 +265,10 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
         }
         else if (refcond == 1) //grad(rho)
         {
-            if (amrex::Math::abs(s[bi](i,j,k,0)-s[bi](i-1,j,k,0))/dx[0] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,0)-s[bi](i,j-1,k,0))/dx[1] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,0)-s[bi](i+1,j,k,0))/dx[0] > refdengrad or 
-                amrex::Math::abs(s[bi](i,j,k,0)-s[bi](i,j+1,k,0))/dx[1] > refdengrad) 
+            if (amrex::Math::abs(rho_at(i,j)-rho_at(i-1,j))/dx[0] > refdengrad or
+                amrex::Math::abs(rho_at(i,j)-rho_at(i,j-1))/dx[1] > refdengrad or
+                amrex::Math::abs(rho_at(i,j)-rho_at(i+1,j))/dx[0] > refdengrad or
+                amrex::Math::abs(rho_at(i,j)-rho_at(i,j+1))/dx[1] > refdengrad)
             {
                 a[bi](i,j,k) = tagval;
             } else {
@@ -277,7 +279,7 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
         {
             if (mutGas > 0)
             {
-                if ((sqrt( s[bi](i,j,k,2)*s[bi](i,j,k,2)+s[bi](i,j,k,1)*s[bi](i,j,k,1))*dx[0]/mutGas) > refdengrad)
+                if ((sqrt( uy_at(i,j)*uy_at(i,j)+ux_at(i,j)*ux_at(i,j))*dx[0]/mutGas) > refdengrad)
                 {
                     a[bi](i,j,k) = tagval;
                 } else {
@@ -286,7 +288,7 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
              }
              else
              {
-                if ((sqrt( s[bi](i,j,k,2)*s[bi](i,j,k,2)+s[bi](i,j,k,1)*s[bi](i,j,k,1))) > refdengrad)
+                if ((sqrt( uy_at(i,j)*uy_at(i,j)+ux_at(i,j)*ux_at(i,j))) > refdengrad)
                 {
                     a[bi](i,j,k) = tagval;
                 } else {
@@ -296,10 +298,10 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
         }
         else if (refcond == 3) //
         {
-            amrex::Real ax = std::abs(s[bi](i+1,j,k,0) - s[bi](i,j,k,0));
-            amrex::Real ay = std::abs(s[bi](i,j+1,k,0) - s[bi](i,j,k,0));
-            ax = amrex::max(ax,std::abs(s[bi](i,j,k,0) - s[bi](i-1,j,k,0)));
-            ay = amrex::max(ay,std::abs(s[bi](i,j,k,0) - s[bi](i,j-1,k,0)));
+            amrex::Real ax = std::abs(rho_at(i+1,j) - rho_at(i,j));
+            amrex::Real ay = std::abs(rho_at(i,j+1) - rho_at(i,j));
+            ax = amrex::max(ax,std::abs(rho_at(i,j) - rho_at(i-1,j)));
+            ay = amrex::max(ay,std::abs(rho_at(i,j) - rho_at(i,j-1)));
 
             if (amrex::max(ax,ay) >= refdengrad)
             {
@@ -312,10 +314,10 @@ AmrQGD::errorEst (TagBoxArray& tags, int clearval, int tagval,
         }
         else if (refcond == 4) //vorticity
         {
-            amrex::Real gradRhoX  = 0.5*(s[bi](i,j+1,k,0) - s[bi](i,j-1,k,0)) / dx[0];
-            amrex::Real gradRhoY  = 0.5*(s[bi](i+1,j,k,0) - s[bi](i-1,j,k,0)) / dx[1];
+            amrex::Real gradRhoX  = 0.5*(rho_at(i,j+1) - rho_at(i,j-1)) / dx[0];
+            amrex::Real gradRhoY  = 0.5*(rho_at(i+1,j) - rho_at(i-1,j)) / dx[1];
             amrex::Real gradRho   = sqrt(pow(gradRhoX,2) + pow(gradRhoY,2));
-            amrex::Real vorticity = std::abs(0.5*(s[bi](i+1,j,k,2) - s[bi](i-1,j,k,2)) / dx[0] + 0.5*(s[bi](i,j+1,k,1) - s[bi](i,j-1,k,1)) / dx[1]);
+            amrex::Real vorticity = std::abs(0.5*(uy_at(i+1,j) - uy_at(i-1,j)) / dx[0] + 0.5*(ux_at(i,j+1) - ux_at(i,j-1)) / dx[1]);
 
             if ((gradRho >= refdengrad) || (vorticity >= 1000*refdengrad))
             {
@@ -343,14 +345,14 @@ AmrQGD::read_params ()
          amrex::Print() << "Refinement condtion does not exist!" << "\n";
          refcond = 0;
     }
-  
+
 
     ParmParse pp1("gasProperties");
     pp1.query("gamma", gamma);
     pp1.query("R", RGas);
     pp1.query("Pr", PrGas);
     pp1.query("mut", mutGas);
-    
+
     ParmParse pp2("qgd");
     pp2.query("alphaQgd", alphaQgd);
     pp2.query("ScQgd", ScQgd);
@@ -358,5 +360,5 @@ AmrQGD::read_params ()
     pp2.query("varScQgd", varScQgd);
     pp2.query("dengradVal", gradVal);
     pp2.query("pressure_limiter", pressureLimiter);
-    
+
 }

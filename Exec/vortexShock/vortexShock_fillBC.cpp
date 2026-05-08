@@ -28,9 +28,9 @@ struct QGDBCFill
                 //if ((y >= 0.96) & (y <= 1.04))
                 //{
                     dest(i,j,k,0) = 1;//dest(ilo,j,k,0);          // rho
-                    dest(i,j,k,1) = 2.011467127; //1.774823935;//dest(ilo,j,k,1);// ux
-                    dest(i,j,k,2) = 0;          //dest(ilo,j,k,2);// uy
-                    dest(i,j,k,3) = 1;          //dest(ilo,j,k,3);// p
+                    dest(i,j,k,1) = 2.011467127; // rho*ux
+                    dest(i,j,k,2) = 0;          // rho*uy
+                    dest(i,j,k,3) = 1./0.4 + 0.5*2.011467127*2.011467127; // E
                     dest(i,j,k,4) = dest(ilo,j,k,4);              // Sc
                     dest(i,j,k,5) = dest(ilo,j,k,5);              // curl
                     dest(i,j,k,6) = dest(ilo,j,k,6);              //magGradRho
@@ -74,18 +74,18 @@ struct QGDBCFill
             }
             if(i < ilo && j < jlo) {
                 dest(i,j,k,0) = 1;//dest(ilo,jlo,k,0);
-                dest(i,j,k,1) = 2.011467127; //1.774823935;;//dest(ilo,jlo,k,1);
-                dest(i,j,k,2) = 0;//dest(ilo,jlo,k,2);
-                dest(i,j,k,3) = 1;//dest(ilo,jlo,k,3);
+                dest(i,j,k,1) = 2.011467127; // rho*ux
+                dest(i,j,k,2) = 0;//rho*uy
+                dest(i,j,k,3) = 1./0.4 + 0.5*2.011467127*2.011467127;//E
                 dest(i,j,k,4) = dest(ilo,jlo,k,4);
                 dest(i,j,k,5) = dest(ilo,jlo,k,5);
                 dest(i,j,k,6) = dest(ilo,jlo,k,6);
             }
             if(i < ilo && j > jhi) {
                 dest(i,j,k,0) = 1;//dest(ilo,jhi,k,0);
-                dest(i,j,k,1) = 2.011467127; //1.774823935;;//dest(ilo,jhi,k,1);
-                dest(i,j,k,2) = 0;//dest(ilo,jhi,k,2);
-                dest(i,j,k,3) = 1;//dest(ilo,jhi,k,3);
+                dest(i,j,k,1) = 2.011467127; // rho*ux
+                dest(i,j,k,2) = 0;//rho*uy
+                dest(i,j,k,3) = 1./0.4 + 0.5*2.011467127*2.011467127;//E
                 dest(i,j,k,4) = dest(ilo,jhi,k,4);
                 dest(i,j,k,5) = dest(ilo,jhi,k,5);
                 dest(i,j,k,6) = dest(ilo,jhi,k,6);

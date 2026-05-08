@@ -27,19 +27,18 @@ AmrQGD::initData ()
         double rho0 = Re*mutGas/(U0*L);
         double p0   = rho0*RGas*T0;
 
-        //Ux
-        snew[bi](i,j,k,1) = U0*sin(x/L)*cos(y/L);
-        //Uy
-        snew[bi](i,j,k,2) = -U0*cos(x/L)*sin(y/L);
-        //p
-        snew[bi](i,j,k,3) = p0 + (rho0*pow(U0,2)/8.)*(cos(2.*x/L) + cos(2.*y/L));
-        //rho
-        snew[bi](i,j,k,0) = snew[bi](i,j,k,3) / (RGas*T0);
-        //Sc
-        snew[bi](i,j,k,4) =  ScQgd;
-        //curl
-        snew[bi](i,j,k,5) = (snew[bi](i+1,j,k,2) - snew[bi](i,j,k,2))/dx[0] - (snew[bi](i,j+1,k,1) - snew[bi](i,j,k,1))/dx[1]; 
-        snew[bi](i,j,k,6) = 0.0;     //magGradRho
+        const Real ux = U0*sin(x/L)*cos(y/L);
+        const Real uy = -U0*cos(x/L)*sin(y/L);
+        const Real p = p0 + (rho0*pow(U0,2)/8.)*(cos(2.*x/L) + cos(2.*y/L));
+        const Real rho = p / (RGas*T0);
+
+        snew[bi](i,j,k,URHO) = rho;
+        snew[bi](i,j,k,UMX) = rho*ux;
+        snew[bi](i,j,k,UMY) = rho*uy;
+        snew[bi](i,j,k,UENG) = p/(gamma - 1.) + 0.5*rho*(ux*ux + uy*uy);
+        snew[bi](i,j,k,USC) = ScQgd;
+        snew[bi](i,j,k,UCURL) = 2.*U0*sin(x/L)*sin(y/L)/L;
+        snew[bi](i,j,k,UMAGGRADRHO) = 0.0;
     });
     FillPatcherFill(S_new, 0, ncomp, nghost, 0, State_Type, 0);
     amrex::Print() << "Amr QGD solver will start with next params: " << "AlphaQQD = " << alphaQgd << " and ScQGD = " << ScQgd << "\n" 
