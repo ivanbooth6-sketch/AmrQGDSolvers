@@ -248,8 +248,8 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
                                      - 0.5*(PrimOld[bi](i,j+1,k,QUX) - PrimOld[bi](i,j-1,k,QUX)) / dx[1];
 
         // solve magGradRho
-        double GradRhoX = 0.5*(PrimOld[bi](i,j+1,k,QRHO) - PrimOld[bi](i,j-1,k,QRHO)) / dx[0];
-        double GradRhoY = 0.5*(PrimOld[bi](i+1,j,k,QRHO) - PrimOld[bi](i-1,j,k,QRHO)) / dx[1];
+        double GradRhoX = 0.5*(PrimOld[bi](i+1,j,k,QRHO) - PrimOld[bi](i-1,j,k,QRHO)) / dx[0];
+        double GradRhoY = 0.5*(PrimOld[bi](i,j+1,k,QRHO) - PrimOld[bi](i,j-1,k,QRHO)) / dx[1];
         StateUpdate[bi](i,j,k,UMAGGRADRHO) = sqrt(pow(GradRhoX,2) + pow(GradRhoY,2));
     });
 
