@@ -25,25 +25,38 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
     MultiFab& S_old = state[0].oldData();
     FillPatcherFill(S_old, 0, ncomp, nghost, time, State_Type, 0);
 
-    auto const& ConsOld = S_old.arrays();
+    auto const& ConsOld = S_old.const_arrays();
+
+    MultiFab Sc_qgd(S_old.boxArray(), S_old.DistributionMap(), 1, nghost);
+    Sc_qgd.setVal(ScQgd, 0, 1, nghost);
 
     if (varScQgd)
     {
-        amrex::ParallelFor(S_old, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
-        {
-            if (amrex::Math::abs(ConsOld[bi](i,j,k,URHO) - ConsOld[bi](i-1,j,k,URHO)) / dx[0] >= gradVal or
-                amrex::Math::abs(ConsOld[bi](i,j,k,URHO) - ConsOld[bi](i,j-1,k,URHO)) / dx[1] >= gradVal or
-                amrex::Math::abs(ConsOld[bi](i,j,k,URHO) - ConsOld[bi](i+1,j,k,URHO)) / dx[0] >= gradVal or
-                amrex::Math::abs(ConsOld[bi](i,j,k,URHO) - ConsOld[bi](i,j+1,k,URHO)) / dx[1] >= gradVal)
+        for (MFIter mfi(Sc_qgd); mfi.isValid(); ++mfi) {
+            // Sc is a passive/model-parameter field, not a conserved quantity.
+            // Recompute it from the immutable old density field into scratch
+            // storage before flux construction so QGD kernels do not mutate
+            // S_old as a side effect. One grown layer is enough for face fluxes.
+            const Box bx = amrex::grow(mfi.validbox(), 1);
+            auto const& u = S_old.const_array(mfi);
+            auto const& sc = Sc_qgd.array(mfi);
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
-                ConsOld[bi](i,j,k,USC) = 4.0;
-            }
-            else
-            {
-                ConsOld[bi](i,j,k,USC) = ScQgd;
-            }
-        });
+                if (amrex::Math::abs(u(i,j,k,URHO) - u(i-1,j,k,URHO)) / dx[0] >= gradVal or
+                    amrex::Math::abs(u(i,j,k,URHO) - u(i,j-1,k,URHO)) / dx[1] >= gradVal or
+                    amrex::Math::abs(u(i,j,k,URHO) - u(i+1,j,k,URHO)) / dx[0] >= gradVal or
+                    amrex::Math::abs(u(i,j,k,URHO) - u(i,j+1,k,URHO)) / dx[1] >= gradVal)
+                {
+                    sc(i,j,k,0) = 4.0;
+                }
+                else
+                {
+                    sc(i,j,k,0) = ScQgd;
+                }
+            });
+        }
     }
+    auto const& ScQgdField = Sc_qgd.const_arrays();
 
     MultiFab Prim_old(S_old.boxArray(), S_old.DistributionMap(), n_prim, nghost);
     for (MFIter mfi(Prim_old); mfi.isValid(); ++mfi) {
@@ -79,7 +92,7 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
     amrex::ParallelFor(fluxes[0], [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
         const int il = i - 1;
-        const double ScQGD = ConsOld[bi](il,j,k,USC);
+        const double ScQGD = ScQgdField[bi](il,j,k,0);
 
         const double ROA = 0.5*(PrimOld[bi](il,j,k,QRHO) + PrimOld[bi](il+1,j,k,QRHO));
         const double UxA = 0.5*(PrimOld[bi](il,j,k,QUX) + PrimOld[bi](il+1,j,k,QUX));
@@ -141,7 +154,7 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
     amrex::ParallelFor(fluxes[1], [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
         const int jb = j - 1;
-        const double ScQGD = ConsOld[bi](i,jb,k,USC);
+        const double ScQGD = ScQgdField[bi](i,jb,k,0);
 
         const double ROC = 0.5*(PrimOld[bi](i,jb,k,QRHO) + PrimOld[bi](i,jb+1,k,QRHO));
         const double UxC = 0.5*(PrimOld[bi](i,jb,k,QUX) + PrimOld[bi](i,jb+1,k,QUX));
@@ -228,7 +241,7 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
         StateUpdate[bi](i,j,k,UMX) = momx;
         StateUpdate[bi](i,j,k,UMY) = momy;
         StateUpdate[bi](i,j,k,UENG) = EN;
-        StateUpdate[bi](i,j,k,USC) = ConsOld[bi](i,j,k,USC);
+        StateUpdate[bi](i,j,k,USC) = ScQgdField[bi](i,j,k,0);
 
         // solve vorticity (curl) from the primitive velocities
         StateUpdate[bi](i,j,k,UCURL) = 0.5*(PrimOld[bi](i+1,j,k,QUY) - PrimOld[bi](i-1,j,k,QUY)) / dx[0]
