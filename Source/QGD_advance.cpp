@@ -1,4 +1,5 @@
 #include "AmrQGD.H"
+#include "QGDHeatFlux.H"
 
 #include <AMReX_Array.H>
 #include <AMReX_MultiFabUtil.H>
@@ -82,13 +83,17 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
 
     static constexpr int nflux = n_cons; // rho, rho*u, rho*v, E
     Array<MultiFab, AMREX_SPACEDIM> fluxes;
+    Array<MultiFab, AMREX_SPACEDIM> face_heat_fluxes;
     for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
         BoxArray face_ba = amrex::convert(S_new.boxArray(), IntVect::TheDimensionVector(dir));
         fluxes[dir].define(face_ba, S_new.DistributionMap(), nflux, 0);
         fluxes[dir].setVal(0.0);
+        face_heat_fluxes[dir].define(face_ba, S_new.DistributionMap(), qgd::nHeatFluxComponents, 0);
+        face_heat_fluxes[dir].setVal(0.0);
     }
 
     auto const& xflux = fluxes[0].arrays();
+    auto const& xheat = face_heat_fluxes[0].arrays();
     amrex::ParallelFor(fluxes[0], [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
         const int il = i - 1;
@@ -140,17 +145,25 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
         const double epsE = PE / (ROE*(gamma - 1.));
         const double epsF = PF / (ROF*(gamma - 1.));
         const double HA = UxA*UxA/2. + UyA*UyA/2. + gamma*epsA;
-        const double qxNSA = -kapA*(T1 - T0) / dx[0];
-        const double qxA = qxNSA - TauA*ROA*UxA*(UxA*(eps1 - eps0) / dx[0] + UyA*(epsF - epsE) / dx[1]
-            + PA*(UxA*(1./PrimOld[bi](il+1,j,k,QRHO) - 1./PrimOld[bi](il,j,k,QRHO)) / dx[0] + UyA*(1./ROF - 1./ROE) / dx[1]));
+        const double qxNSA = qgd::computeNSFourierHeatFlux(kapA, T1, T0, dx[0]);
+        const auto heatA = qgd::computeQGDHeatFluxContributions(
+            qxNSA, TauA, ROA, UxA, UxA, UyA,
+            eps1, eps0, epsF, epsE,
+            1./PrimOld[bi](il+1,j,k,QRHO), 1./PrimOld[bi](il,j,k,QRHO), 1./ROF, 1./ROE,
+            PA, dx[0], dx[1]);
+        xheat[bi](i,j,k,qgd::HeatFluxNS) = heatA.ns;
+        xheat[bi](i,j,k,qgd::HeatFluxQGDPOverRho) = heatA.qgd_p_over_rho;
+        xheat[bi](i,j,k,qgd::HeatFluxQGDInvRho) = heatA.qgd_inv_rho;
+        xheat[bi](i,j,k,qgd::HeatFluxTotal) = heatA.total();
 
         xflux[bi](i,j,k,URHO) = JmxA;
         xflux[bi](i,j,k,UMX) = JmxA*UxA + PA - PxxA;
         xflux[bi](i,j,k,UMY) = JmxA*UyA - PxyA;
-        xflux[bi](i,j,k,UENG) = JmxA*HA + qxA - PxxA*UxA - PxyA*UyA;
+        xflux[bi](i,j,k,UENG) = JmxA*HA + xheat[bi](i,j,k,qgd::HeatFluxTotal) - PxxA*UxA - PxyA*UyA;
     });
 
     auto const& yflux = fluxes[1].arrays();
+    auto const& yheat = face_heat_fluxes[1].arrays();
     amrex::ParallelFor(fluxes[1], [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k)
     {
         const int jb = j - 1;
@@ -202,14 +215,21 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
         const double epsF = PF / (ROF*(gamma - 1.));
         const double epsG = PG / (ROG*(gamma - 1.));
         const double HC = UxC*UxC/2. + UyC*UyC/2. + gamma*epsC;
-        const double qyNSC = -kapC*(T3 - T0) / dx[1];
-        const double qyC = qyNSC - TauC*ROC*UyC*(UyC*(eps3 - eps0) / dx[1] + UxC*(epsF - epsG) / dx[0]
-            + PC*(UyC*(1./PrimOld[bi](i,jb+1,k,QRHO) - 1./PrimOld[bi](i,jb,k,QRHO)) / dx[1] + UxC*(1./ROF - 1./ROG) / dx[0]));
+        const double qyNSC = qgd::computeNSFourierHeatFlux(kapC, T3, T0, dx[1]);
+        const auto heatC = qgd::computeQGDHeatFluxContributions(
+            qyNSC, TauC, ROC, UyC, UyC, UxC,
+            eps3, eps0, epsF, epsG,
+            1./PrimOld[bi](i,jb+1,k,QRHO), 1./PrimOld[bi](i,jb,k,QRHO), 1./ROF, 1./ROG,
+            PC, dx[1], dx[0]);
+        yheat[bi](i,j,k,qgd::HeatFluxNS) = heatC.ns;
+        yheat[bi](i,j,k,qgd::HeatFluxQGDPOverRho) = heatC.qgd_p_over_rho;
+        yheat[bi](i,j,k,qgd::HeatFluxQGDInvRho) = heatC.qgd_inv_rho;
+        yheat[bi](i,j,k,qgd::HeatFluxTotal) = heatC.total();
 
         yflux[bi](i,j,k,URHO) = JmyC;
         yflux[bi](i,j,k,UMX) = JmyC*UxC - PyxC;
         yflux[bi](i,j,k,UMY) = JmyC*UyC + PC - PyyC;
-        yflux[bi](i,j,k,UENG) = JmyC*HC + qyC - PyyC*UyC - PyxC*UxC;
+        yflux[bi](i,j,k,UENG) = JmyC*HC + yheat[bi](i,j,k,qgd::HeatFluxTotal) - PyyC*UyC - PyxC*UxC;
     });
 
 #if (AMREX_SPACEDIM == 3)
