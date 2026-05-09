@@ -130,7 +130,7 @@ AmrQGD::computeMaxWaveSpeed ()
     ReduceData<Real> reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
-    reduce_op.eval(S_new, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+    reduce_op.eval(S_new, IntVect(0), reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
     {
         const Real rho = state_data[bi](i,j,k,URHO);
         if (rho <= 0.0) {
@@ -166,7 +166,7 @@ AmrQGD::computeMinTau ()
     ReduceData<Real> reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
-    reduce_op.eval(S_new, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+    reduce_op.eval(S_new, IntVect(0), reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
     {
         const Real rho = state_data[bi](i,j,k,URHO);
         if (rho <= 0.0) {
