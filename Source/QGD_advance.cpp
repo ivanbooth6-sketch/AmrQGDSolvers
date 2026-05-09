@@ -285,7 +285,7 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
         ReduceOps<ReduceOpSum> reduce_op;
         ReduceData<Long> reduce_data(reduce_op);
         using ReduceTuple = typename decltype(reduce_data)::Type;
-        reduce_op.eval(stable_state, reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
+        reduce_op.eval(stable_state, IntVect(0), reduce_data, [=] AMREX_GPU_DEVICE (int bi, int i, int j, int k) -> ReduceTuple
         {
             const Real rho = StableState[bi](i,j,k,URHO);
             const Real ux = StableState[bi](i,j,k,UMX) / rho;
