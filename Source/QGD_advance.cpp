@@ -322,12 +322,13 @@ Real AmrQGD::advance (Real time, Real dt, int iteration, int ncycle)
     if (Level() < parent->finestLevel()) {
         auto& fine_level = getLevel(Level()+1);
         if (fine_level.flux_reg) {
+            fine_level.flux_reg->setVal(0.0);
             for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
                 Real area = 1.0;
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
                     if (d != dir) { area *= dx[d]; }
                 }
-                fine_level.flux_reg->CrseInit(fluxes[dir], dir, 0, 0, nflux, -dt*area);
+                fine_level.flux_reg->CrseInit(fluxes[dir], dir, 0, 0, nflux, -dt*area, FluxRegister::ADD);
             }
         }
     }
